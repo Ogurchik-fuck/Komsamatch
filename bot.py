@@ -8,7 +8,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 import database as db
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 9131132339  # <-- ЗАМЕНИ НА СВОЙ ID ИЗ @userinfobot
+ADMIN_ID = 9131132339
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -22,7 +22,6 @@ class Form(StatesGroup):
     bio = State()
     photo = State()
 
-# Клавиатуры
 main_menu_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🚀 Смотреть анкеты"), KeyboardButton(text="👤 Моя анкета")]],
     resize_keyboard=True
@@ -53,7 +52,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     user = await db.get_user(message.from_user.id)
     if user:
-        if user[9]:
+        if user.get("is_banned"):
             await message.answer("Твоя анкета заблокирована за нарушение правил.")
             return
         await message.answer("С возвращением в КомсаМэтч! Выбери действие в меню ниже:", reply_markup=main_menu_kb)
@@ -133,7 +132,7 @@ async def menu_search(message: types.Message):
     if not user:
         await message.answer("Сначала заполни анкету через /start")
         return
-    if user[9]:
+    if user.get("is_banned"):
         await message.answer("Твоя анкета заблокирована.")
         return
     await show_next_profile(message, message.from_user.id)
@@ -145,12 +144,11 @@ async def menu_my_profile(message: types.Message):
         await message.answer("У тебя ещё нет анкеты. Нажми /start")
         return
 
-    _, _, name, age, _, _, district, bio, photo_id, _ = user
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✏️ Заполнить заново", callback_data="edit_profile")
     ]])
-    caption = f"<b>Твоя анкета:</b>\n\n<b>{name}, {age}</b> • {district}\n{bio}"
-    await message.answer_photo(photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=kb)
+    caption = f"<b>Твоя анкета:</b>\n\n<b>{user['name']}, {user['age']}</b> • {user['district']}\n{user['bio']}"
+    await message.answer_photo(photo=user["photo_id"], caption=caption, parse_mode="HTML", reply_markup=kb)
 
 @dp.callback_query(F.data == "edit_profile")
 async def handle_edit_profile(callback: types.CallbackQuery, state: FSMContext):
@@ -164,7 +162,7 @@ async def show_next_profile(message: types.Message, user_id: int):
         await message.answer("Анкеты пока закончились. Загляни позже!", reply_markup=main_menu_kb)
         return
 
-    target_id, name, age, district, bio, photo_id = profile
+    target_id = profile["user_id"]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="❤️ Лайк", callback_data=f"like_{target_id}"),
@@ -174,8 +172,8 @@ async def show_next_profile(message: types.Message, user_id: int):
             InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"report_{target_id}")
         ]
     ])
-    caption = f"<b>{name}, {age}</b> • {district}\n{bio}"
-    await message.answer_photo(photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=kb)
+    caption = f"<b>{profile['name']}, {profile['age']}</b> • {profile['district']}\n{profile['bio']}"
+    await message.answer_photo(photo=profile["photo_id"], caption=caption, parse_mode="HTML", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith(("like_", "pass_")))
 async def handle_vote(callback: types.CallbackQuery):
@@ -191,8 +189,8 @@ async def handle_vote(callback: types.CallbackQuery):
         user_info = await db.get_user(user_id)
         target_info = await db.get_user(target_id)
         if user_info and target_info:
-            await callback.message.answer(f"🎉 У вас взаимная симпатия с {target_info[2]}! Написать: @{target_info[1]}")
-            await bot.send_message(target_id, f"🎉 У вас взаимная симпатия с {user_info[2]}! Написать: @{user_info[1]}")
+            await callback.message.answer(f"🎉 У вас взаимная симпатия с {target_info['name']}! Написать: @{target_info['username']}")
+            await bot.send_message(target_id, f"🎉 У вас взаимная симпатия с {user_info['name']}! Написать: @{user_info['username']}")
 
     await show_next_profile(callback.message, user_id)
     await callback.answer()
@@ -213,11 +211,11 @@ async def handle_report(callback: types.CallbackQuery):
         ]])
         caption = (
             f"🚨 <b>Новая жалоба!</b>\n"
-            f"Нарушитель: {target_info[2]}, {target_info[3]} (@{target_info[1]}, ID: <code>{target_id}</code>)\n"
-            f"Район: {target_info[6]}\n"
-            f"Описание: {target_info[7]}"
+            f"Нарушитель: {target_info['name']}, {target_info['age']} (@{target_info['username']}, ID: <code>{target_id}</code>)\n"
+            f"Район: {target_info['district']}\n"
+            f"Описание: {target_info['bio']}"
         )
-        await bot.send_photo(ADMIN_ID, photo=target_info[8], caption=caption, parse_mode="HTML", reply_markup=ban_kb)
+        await bot.send_photo(ADMIN_ID, photo=target_info["photo_id"], caption=caption, parse_mode="HTML", reply_markup=ban_kb)
 
     await show_next_profile(callback.message, user_id)
 
@@ -233,6 +231,7 @@ async def handle_ban(callback: types.CallbackQuery):
 
 async def main():
     await db.init_db()
+    await bot.delete_webhook(drop_pending_updates=True)
     print("Бот запущен!")
     await dp.start_polling(bot)
 
