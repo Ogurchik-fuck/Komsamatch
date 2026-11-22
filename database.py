@@ -1,4 +1,5 @@
 import math
+import json
 import aiosqlite
 
 DB_NAME = "dating.db"
@@ -16,13 +17,18 @@ async def init_db():
                 lat REAL,
                 lon REAL,
                 bio TEXT,
-                photo_id TEXT,
+                photos TEXT,
+                video_id TEXT,
+                video_type TEXT,
+                is_active BOOLEAN DEFAULT 1,
                 is_banned BOOLEAN DEFAULT 0
             )
         """)
         for col in [
-            "ALTER TABLE users ADD COLUMN lat REAL",
-            "ALTER TABLE users ADD COLUMN lon REAL",
+            "ALTER TABLE users ADD COLUMN photos TEXT",
+            "ALTER TABLE users ADD COLUMN video_id TEXT",
+            "ALTER TABLE users ADD COLUMN video_type TEXT",
+            "ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1",
             "ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT 0"
         ]:
             try:
@@ -40,12 +46,14 @@ async def init_db():
         """)
         await db.commit()
 
-async def add_user(user_id, username, name, age, gender, target_gender, lat, lon, bio, photo_id):
+async def add_user(user_id, username, name, age, gender, target_gender, lat, lon, bio, photos_list, video_id=None, video_type=None):
+    photos_json = json.dumps(photos_list)
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
-            INSERT OR REPLACE INTO users (user_id, username, name, age, gender, target_gender, lat, lon, bio, photo_id, is_banned)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-        """, (user_id, username, name, age, gender, target_gender, lat, lon, bio, photo_id))
+            INSERT OR REPLACE INTO users 
+            (user_id, username, name, age, gender, target_gender, lat, lon, bio, photos, video_id, video_type, is_active, is_banned)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+        """, (user_id, username, name, age, gender, target_gender, lat, lon, bio, photos_json, video_id, video_type))
         await db.commit()
 
 async def update_location(user_id, lat, lon):
@@ -53,52 +61,27 @@ async def update_location(user_id, lat, lon):
         await db.execute("UPDATE users SET lat = ?, lon = ? WHERE user_id = ?", (lat, lon, user_id))
         await db.commit()
 
+async def set_active(user_id, is_active: bool):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET is_active = ? WHERE user_id = ?", (1 if is_active else 0, user_id))
+        await db.commit()
+
 async def get_user(user_id):
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
-        return dict(row) if row else None
-
-def calc_distance(lat1, lon1, lat2, lon2):
-    if None in (lat1, lon1, lat2, lon2):
-        return None
-    r = 6371.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    dist = 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    if dist < 1:
-        return "менее 1 км"
-    return f"{round(dist)} км"
-
-async def get_next_profile(user_id):
-    me = await get_user(user_id)
-    if not me or me.get("is_banned"):
-        return None
-
-    async with aiosqlite.connect(DB_NAME) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("""
-            SELECT user_id, name, age, lat, lon, bio, photo_id FROM users
-            WHERE user_id != ?
-              AND gender = ?
-              AND is_banned = 0
-              AND user_id NOT IN (SELECT to_user FROM likes WHERE from_user = ?)
-        """, (user_id, me["target_gender"], user_id))
-        rows = await cursor.fetchall()
-        if not rows:
+        if not row:
             return None
-
-        profiles = [dict(r) for r in rows]
-        # Сортируем анкеты от ближайших к дальним
-        profiles.sort(key=lambda p: (
-            calc_distance_num(me.get("lat"), me.get("lon"), p.get("lat"), p.get("lon"))
-        ))
-        best = profiles
-        best["distance_str"] = calc_distance(me.get("lat"), me.get("lon"), best.get("lat"), best.get("lon"))
-        return best
+        user = dict(row)
+        # Совместимость со старыми анкетами
+        if user.get("photos"):
+            user["photos_list"] = json.loads(user["photos"])
+        elif user.get("photo_id"):
+            user["photos_list"] = [user["photo_id"]]
+        else:
+            user["photos_list"] = []
+        return user
 
 def calc_distance_num(lat1, lon1, lat2, lon2):
     if None in (lat1, lon1, lat2, lon2):
@@ -109,6 +92,53 @@ def calc_distance_num(lat1, lon1, lat2, lon2):
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def calc_distance(lat1, lon1, lat2, lon2):
+    if None in (lat1, lon1, lat2, lon2):
+        return "рядом в Комсе"
+    dist = calc_distance_num(lat1, lon1, lat2, lon2)
+    if dist < 1:
+        return "менее 1 км от тебя"
+    return f"{round(dist)} км от тебя"
+
+async def get_next_profile(user_id):
+    me = await get_user(user_id)
+    if not me or me.get("is_banned") or not me.get("is_active", 1):
+        return None
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT * FROM users
+            WHERE user_id != ?
+              AND gender = ?
+              AND is_banned = 0
+              AND (is_active = 1 OR is_active IS NULL)
+              AND user_id NOT IN (SELECT to_user FROM likes WHERE from_user = ?)
+        """, (user_id, me["target_gender"], user_id))
+        rows = await cursor.fetchall()
+        if not rows:
+            return None
+
+        profiles = []
+        for r in rows:
+            p = dict(r)
+            if p.get("photos"):
+                p["photos_list"] = json.loads(p["photos"])
+            elif p.get("photo_id"):
+                p["photos_list"] = [p["photo_id"]]
+            else:
+                p["photos_list"] = []
+            if p["photos_list"]:
+                profiles.append(p)
+
+        if not profiles:
+            return None
+
+        profiles.sort(key=lambda p: calc_distance_num(me.get("lat"), me.get("lon"), p.get("lat"), p.get("lon")))
+        best = profiles[0]
+        best["distance_str"] = calc_distance(me.get("lat"), me.get("lon"), best.get("lat"), best.get("lon"))
+        return best
 
 async def add_like(from_user, to_user, is_like: bool) -> bool:
     async with aiosqlite.connect(DB_NAME) as db:
