@@ -74,7 +74,6 @@ async def get_user(user_id):
         if not row:
             return None
         user = dict(row)
-        # Совместимость со старыми анкетами
         if user.get("photos"):
             user["photos_list"] = json.loads(user["photos"])
         elif user.get("photo_id"):
@@ -123,12 +122,7 @@ async def get_next_profile(user_id):
         profiles = []
         for r in rows:
             p = dict(r)
-            if p.get("photos"):
-                p["photos_list"] = json.loads(p["photos"])
-            elif p.get("photo_id"):
-                p["photos_list"] = [p["photo_id"]]
-            else:
-                p["photos_list"] = []
+            p["photos_list"] = json.loads(p["photos"]) if p.get("photos") else ([p["photo_id"]] if p.get("photo_id") else [])
             if p["photos_list"]:
                 profiles.append(p)
 
@@ -136,9 +130,32 @@ async def get_next_profile(user_id):
             return None
 
         profiles.sort(key=lambda p: calc_distance_num(me.get("lat"), me.get("lon"), p.get("lat"), p.get("lon")))
-        best = profiles[0]
+        best = next(iter(profiles))
         best["distance_str"] = calc_distance(me.get("lat"), me.get("lon"), best.get("lat"), best.get("lon"))
         return best
+
+async def get_incoming_like(user_id):
+    me = await get_user(user_id)
+    if not me:
+        return None
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT u.* FROM users u
+            JOIN likes l ON u.user_id = l.from_user
+            WHERE l.to_user = ?
+              AND l.is_like = 1
+              AND u.is_banned = 0
+              AND u.user_id NOT IN (SELECT to_user FROM likes WHERE from_user = ?)
+            LIMIT 1
+        """, (user_id, user_id))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        p = dict(row)
+        p["photos_list"] = json.loads(p["photos"]) if p.get("photos") else ([p["photo_id"]] if p.get("photo_id") else [])
+        p["distance_str"] = calc_distance(me.get("lat"), me.get("lon"), p.get("lat"), p.get("lon"))
+        return p
 
 async def add_like(from_user, to_user, is_like: bool) -> bool:
     async with aiosqlite.connect(DB_NAME) as db:
