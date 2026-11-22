@@ -7,7 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    InputMediaPhoto
+    InputMediaPhoto, InputMediaVideo
 )
 import database as db
 
@@ -70,33 +70,43 @@ def make_quick_kb(old_value):
         resize_keyboard=True, one_time_keyboard=True
     )
 
-def format_profile_card(user: dict, is_own=False) -> str:
-    header = "✨ <b>Твоя визитка в КомсаМэтч</b>\n" if is_own else ""
+def format_profile_card(user: dict, is_own=False, prefix="") -> str:
+    header = "✨ <b>Твоя визитка в КомсаМэтч</b>\n" if is_own else prefix
     dist = f"📍 <i>{user['distance_str']}</i>\n" if user.get("distance_str") else ""
-    media_badge = "🎬 <i>Есть видео-визитка</i>\n" if user.get("video_id") else ""
-    return f"{header}👤 <b>{user['name']}, {user['age']}</b>\n{dist}{media_badge}<blockquote>{user['bio']}</blockquote>"
+    return f"{header}👤 <b>{user['name']}, {user['age']}</b>\n{dist}<blockquote>{user['bio']}</blockquote>"
 
-async def send_full_profile(chat_id: int, user: dict, reply_markup=None, is_own=False):
+async def send_full_profile(chat_id: int, user: dict, reply_markup=None, is_own=False, prefix=""):
     photos = user.get("photos_list", [])
-    caption = format_profile_card(user, is_own=is_own)
-    if len(photos) > 1:
-        media = [InputMediaPhoto(media=p) for p in photos]
+    caption = format_profile_card(user, is_own=is_own, prefix=prefix)
+    video_id = user.get("video_id")
+    video_type = user.get("video_type")
+
+    media = []
+    for idx, p in enumerate(photos):
+        if idx == 0:
+            media.append(InputMediaPhoto(media=p, caption=caption, parse_mode="HTML"))
+        else:
+            media.append(InputMediaPhoto(media=p))
+
+    if video_id and video_type == "video":
+        if not media:
+            media.append(InputMediaVideo(media=video_id, caption=caption, parse_mode="HTML"))
+        else:
+            media.append(InputMediaVideo(media=video_id))
+
+    if len(media) > 1:
         await bot.send_media_group(chat_id=chat_id, media=media)
-        if user.get("video_id"):
-            if user.get("video_type") == "video_note":
-                await bot.send_video_note(chat_id=chat_id, video_note=user["video_id"])
-            else:
-                await bot.send_video(chat_id=chat_id, video=user["video_id"])
-        await bot.send_message(chat_id=chat_id, text=caption, parse_mode="HTML", reply_markup=reply_markup)
+        if video_id and video_type == "video_note":
+            await bot.send_video_note(chat_id=chat_id, video_note=video_id, reply_markup=reply_markup)
+        elif reply_markup:
+            await bot.send_message(chat_id=chat_id, text="👇 <b>Выбери действие:</b>", parse_mode="HTML", reply_markup=reply_markup)
     else:
         photo_id = next(iter(photos), None) or user.get("photo_id")
-        if user.get("video_id"):
-            await bot.send_photo(chat_id=chat_id, photo=photo_id)
-            if user.get("video_type") == "video_note":
-                await bot.send_video_note(chat_id=chat_id, video_note=user["video_id"])
-            else:
-                await bot.send_video(chat_id=chat_id, video=user["video_id"])
-            await bot.send_message(chat_id=chat_id, text=caption, parse_mode="HTML", reply_markup=reply_markup)
+        if video_id and video_type == "video_note":
+            await bot.send_photo(chat_id=chat_id, photo=photo_id, caption=caption, parse_mode="HTML")
+            await bot.send_video_note(chat_id=chat_id, video_note=video_id, reply_markup=reply_markup)
+        elif video_id and video_type == "video":
+            await bot.send_video(chat_id=chat_id, video=video_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
         else:
             await bot.send_photo(chat_id=chat_id, photo=photo_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
 @dp.message(CommandStart())
@@ -298,6 +308,16 @@ async def handle_edit_profile(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 async def show_next_profile(chat_id: int, user_id: int):
+    admirer = await db.get_incoming_like(user_id)
+    if admirer:
+        target_id = admirer["user_id"]
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❤️ Взаимно!", callback_data=f"like_{target_id}"), InlineKeyboardButton(text="👎 Неинтересно", callback_data=f"pass_{target_id}")],
+            [InlineKeyboardButton(text="⚠️ Жалоба", callback_data=f"report_{target_id}")]
+        ])
+        await send_full_profile(chat_id, admirer, reply_markup=kb, prefix="💘 <b>Ты понравился этому человеку!</b>\n")
+        return
+
     profile = await db.get_next_profile(user_id)
     if not profile:
         await bot.send_message(chat_id, "😴 <b>Анкеты пока закончились!</b> Загляни чуть позже!", parse_mode="HTML", reply_markup=main_menu_kb)
@@ -309,24 +329,42 @@ async def show_next_profile(chat_id: int, user_id: int):
     ])
     await send_full_profile(chat_id, profile, reply_markup=kb, is_own=False)
 
+@dp.callback_query(F.data == "view_likes")
+async def handle_view_likes(callback: types.CallbackQuery):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await show_next_profile(callback.message.chat.id, callback.from_user.id)
+    await callback.answer()
+
 @dp.callback_query(F.data.startswith(("like_", "pass_")))
 async def handle_vote(callback: types.CallbackQuery):
     action, target_id_str = callback.data.split("_", 1)
     target_id = int(target_id_str)
     user_id = callback.from_user.id
+    is_like = (action == "like")
     await callback.message.edit_reply_markup(reply_markup=None)
-    is_match = await db.add_like(user_id, target_id, action == "like")
+    is_match = await db.add_like(user_id, target_id, is_like)
+
     if is_match:
         u1 = await db.get_user(user_id)
         u2 = await db.get_user(target_id)
         if u1 and u2:
             kb1 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💌 Отправить кружочек / сообщение", callback_data=f"msg_{target_id}")]])
             kb2 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💌 Отправить кружочек / сообщение", callback_data=f"msg_{user_id}")]])
-            await callback.message.answer(f"🎉 <b>Взаимная симпатия с {u2['name']}!</b> Написать: @{u2['username']}", parse_mode="HTML", reply_markup=kb1)
-            await bot.send_message(target_id, f"🎉 <b>Взаимная симпатия с {u1['name']}!</b> Написать: @{u1['username']}", parse_mode="HTML", reply_markup=kb2)
+            await callback.message.answer(f"🎉 <b>Бинго! Взаимная симпатия с {u2['name']}!</b> Написать: @{u2['username']}", parse_mode="HTML", reply_markup=kb1)
+            await bot.send_message(target_id, f"🎉 <b>Бинго! Взаимная симпатия с {u1['name']}!</b> Написать: @{u1['username']}", parse_mode="HTML", reply_markup=kb2)
+    elif is_like:
+        try:
+            view_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👀 Посмотреть, кто это", callback_data="view_likes")]])
+            await bot.send_message(
+                target_id,
+                "💘 <b>Твоя анкета кому-то понравилась!</b>\nЗаканчивай с просмотром и давай посмотрим, кто поставил лайк 👇",
+                parse_mode="HTML", reply_markup=view_kb
+            )
+        except Exception:
+            pass
+
     await show_next_profile(callback.message.chat.id, user_id)
     await callback.answer()
-
 @dp.callback_query(F.data.startswith("msg_"))
 async def start_direct_msg(callback: types.CallbackQuery, state: FSMContext):
     _, target_id_str = callback.data.split("_", 1)
