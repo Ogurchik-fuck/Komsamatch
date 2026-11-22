@@ -8,7 +8,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 import database as db
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 123456789  # <-- ЗАМЕНИ НА СВОЙ ID ИЗ @userinfobot
+ADMIN_ID = 9131132339  # <-- ЗАМЕНИ НА СВОЙ ID ИЗ @userinfobot
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
