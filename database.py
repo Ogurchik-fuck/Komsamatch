@@ -124,9 +124,21 @@ def calc_distance_num(lat1, lon1, lat2, lon2):
 
 def format_place(me: dict, target: dict) -> str:
     if None not in (me.get("lat"), me.get("lon"), target.get("lat"), target.get("lon")):
-        dist = calc_distance_num(me["lat"], me["lon"], target["lat"], target["lon"])
-        return "менее 1 км от тебя" if dist < 1 else f"{round(dist)} км от тебя"
+        dist_km = calc_distance_num(me["lat"], me["lon"], target["lat"], target["lon"])
+        if dist_km < 1.0:
+            meters = max(50, round(dist_km * 1000 / 50) * 50)
+            walk_min = max(1, round(meters / 80))
+            return f"~{meters} м от тебя ({walk_min} мин пешком)"
+        elif dist_km <= 3.0:
+            km_rounded = round(dist_km, 1)
+            walk_min = round(dist_km * 12)
+            return f"~{km_rounded} км от тебя ({walk_min} мин пешком)"
+        else:
+            km_rounded = round(dist_km)
+            drive_min = max(3, round(dist_km * 1.5))
+            return f"~{km_rounded} км от тебя (~{drive_min} мин на авто)"
     return target.get("location_text") or "г. Комсомольск-на-Амуре"
+
 
 async def get_next_profile(user_id):
     me = await get_user(user_id)
