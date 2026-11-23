@@ -18,6 +18,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 class Form(StatesGroup):
+    contact = State()
     name = State()
     age = State()
     gender = State()
@@ -33,6 +34,10 @@ class UpdateGeo(StatesGroup):
 class UpdateBio(StatesGroup):
     waiting_bio = State()
 
+contact_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="📱 Поделиться контактом", request_contact=True)]],
+    resize_keyboard=True, one_time_keyboard=True
+)
 main_menu_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🔥 Смотреть анкеты"), KeyboardButton(text="👤 Моя анкета")]],
     resize_keyboard=True
@@ -135,9 +140,6 @@ async def send_full_profile(chat_id: int, user: dict, reply_markup=None, is_own=
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    if not message.from_user.username:
-        await message.answer("👋 Привет! Сначала задай <b>@username</b> в настройках Telegram — так твои пары смогут написать тебе при мэтче!", parse_mode="HTML")
-        return
     user = await db.get_user(message.from_user.id)
     if user:
         if user.get("is_banned"):
@@ -154,14 +156,34 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 async def start_registration(message: types.Message, state: FSMContext, old_user: dict = None):
     await state.update_data(old_user=old_user or {}, photos_list=[])
-    await message.answer("✏️ <b>Шаг 1/7.</b> Как тебя зовут?", parse_mode="HTML", reply_markup=make_quick_kb((old_user or {}).get("name")))
+    await message.answer(
+        "📱 <b>Шаг 1/8.</b> Нажми кнопку <b>«Поделиться контактом»</b> ниже — это защищает бота от фейков и позволит твоей паре открыть чат с тобой в один клик при взаимной симпатии:",
+        parse_mode="HTML", reply_markup=contact_kb
+    )
+    await state.set_state(Form.contact)
+
+@dp.message(Form.contact, F.contact)
+async def process_contact(message: types.Message, state: FSMContext):
+    if message.contact.user_id != message.from_user.id:
+        await message.answer("⚠️ Пожалуйста, отправь именно <b>свой</b> контакт кнопкой внизу экрана:", parse_mode="HTML", reply_markup=contact_kb)
+        return
+    phone = message.contact.phone_number
+    if not phone.startswith("+"):
+        phone = f"+{phone}"
+    data = await state.get_data()
+    await state.update_data(phone=phone)
+    await message.answer("✏️ <b>Шаг 2/8.</b> Как тебя зовут?", parse_mode="HTML", reply_markup=make_quick_kb(data.get("old_user", {}).get("name")))
     await state.set_state(Form.name)
+
+@dp.message(Form.contact)
+async def process_contact_invalid(message: types.Message):
+    await message.answer("👇 Нажми на кнопку <b>«📱 Поделиться контактом»</b> внизу экрана, чтобы продолжить:", parse_mode="HTML", reply_markup=contact_kb)
 
 @dp.message(Form.name)
 async def process_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
     await state.update_data(name=message.text)
-    await message.answer("🎂 <b>Шаг 2/7.</b> Сколько тебе лет?", parse_mode="HTML", reply_markup=make_quick_kb(data.get("old_user", {}).get("age")))
+    await message.answer("🎂 <b>Шаг 3/8.</b> Сколько тебе лет?", parse_mode="HTML", reply_markup=make_quick_kb(data.get("old_user", {}).get("age")))
     await state.set_state(Form.age)
 
 @dp.message(Form.age)
@@ -177,7 +199,7 @@ async def process_age(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Просим указать ваш настоящий возраст (от 14 до 67 лет):")
         return
     await state.update_data(age=age)
-    await message.answer("👤 <b>Шаг 3/7.</b> Выбери свой пол:", parse_mode="HTML", reply_markup=gender_kb)
+    await message.answer("👤 <b>Шаг 4/8.</b> Выбери свой пол:", parse_mode="HTML", reply_markup=gender_kb)
     await state.set_state(Form.gender)
 
 @dp.message(Form.gender)
@@ -190,7 +212,7 @@ async def process_gender(message: types.Message, state: FSMContext):
         await message.answer("Выбери вариант кнопкой ниже 👇", reply_markup=gender_kb)
         return
     await state.update_data(gender=gender)
-    await message.answer("💘 <b>Шаг 4/7.</b> Кого ты хочешь найти?", parse_mode="HTML", reply_markup=target_kb)
+    await message.answer("💘 <b>Шаг 5/8.</b> Кого ты хочешь найти?", parse_mode="HTML", reply_markup=target_kb)
     await state.set_state(Form.target_gender)
 
 @dp.message(Form.target_gender)
@@ -204,7 +226,7 @@ async def process_target(message: types.Message, state: FSMContext):
         return
     await state.update_data(target_gender=target)
     await message.answer(
-        "📍 <b>Шаг 5/7.</b> Отправь геопозицию (чтобы видеть км до людей), выбери свой район Комсомольска-на-Амуре или останься инкогнито 👇",
+        "📍 <b>Шаг 6/8.</b> Отправь геопозицию (чтобы видеть км до людей), выбери свой район Комсомольска-на-Амуре или останься инкогнито 👇",
         parse_mode="HTML", reply_markup=geo_kb
     )
     await state.set_state(Form.location)
@@ -231,7 +253,7 @@ async def process_location_text(message: types.Message, state: FSMContext):
 async def ask_bio(message: types.Message, state: FSMContext, data: dict):
     old_bio = data.get("old_user", {}).get("bio")
     await message.answer(
-        "📝 <b>Шаг 6/7.</b> Напиши пару слов о себе (интересы, кого ищешь) или нажми <b>«⏭ Пропустить»</b> — анкету можно создать и без текста:",
+        "📝 <b>Шаг 7/8.</b> Напиши пару слов о себе (интересы, кого ищешь) или нажми <b>«⏭ Пропустить»</b> — анкету можно создать и без текста:",
         parse_mode="HTML", reply_markup=make_quick_kb(old_bio, allow_skip=True)
     )
     await state.set_state(Form.bio)
@@ -240,7 +262,7 @@ async def ask_bio(message: types.Message, state: FSMContext, data: dict):
 async def process_bio(message: types.Message, state: FSMContext):
     bio = "" if (message.text and "Пропустить" in message.text) else (message.text or "")
     await state.update_data(bio=bio)
-    await message.answer("📸 <b>Шаг 7/7.</b> Загрузи от <b>1 до 3 фото</b> для анкеты:", parse_mode="HTML", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("📸 <b>Шаг 8/8.</b> Загрузи от <b>1 до 3 фото</b> для анкеты:", parse_mode="HTML", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(Form.photos)
 
 @dp.message(Form.photos, F.photo)
@@ -284,6 +306,7 @@ async def complete_registration(message: types.Message, state: FSMContext):
     data = await state.get_data()
     await db.add_user(
         user_id=message.from_user.id, username=message.from_user.username,
+        phone=data.get("phone"),
         name=data["name"], age=data["age"], gender=data["gender"],
         target_gender=data["target_gender"], lat=data.get("lat"), lon=data.get("lon"),
         location_text=data.get("location_text", "г. Комсомольск-на-Амуре"),
@@ -445,15 +468,23 @@ async def handle_vote(callback: types.CallbackQuery):
             next_kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔥 Смотреть дальше", callback_data="view_likes")
             ]])
+            link2 = f"https://t.me{u2['phone']}" if u2.get("phone") else (f"https://t.me{u2['username'].lstrip('@')}" if u2.get("username") else f"tg://user?id={target_id}")
+            link1 = f"https://t.me{u1['phone']}" if u1.get("phone") else (f"https://t.me{u1['username'].lstrip('@')}" if u1.get("username") else f"tg://user?id={user_id}")
+
             await callback.message.answer(
-                f"🎉 <b>Бинго! Взаимная симпатия с <a href='https://t.me{u2['username']}'>{u2['name']}</a>!</b>\nНажимай на имя, чтобы перейти в личку 💌",
+                f"🎉 <b>Бинго! Взаимная симпатия с <a href='{link2}'>{u2['name']}</a>!</b>\nНажимай на имя или карточку контакта ниже 💌",
                 parse_mode="HTML", reply_markup=next_kb
             )
+            if u2.get("phone"):
+                await bot.send_contact(user_id, phone_number=u2["phone"], first_name=u2["name"])
+
             await bot.send_message(
                 target_id,
-                f"🎉 <b>Бинго! Взаимная симпатия с <a href='https://t.me{u1['username']}'>{u1['name']}</a>!</b>\nНажимай на имя, чтобы перейти в личку 💌",
+                f"🎉 <b>Бинго! Взаимная симпатия с <a href='{link1}'>{u1['name']}</a>!</b>\nНажимай на имя или карточку контакта ниже 💌",
                 parse_mode="HTML", reply_markup=next_kb
             )
+            if u1.get("phone"):
+                await bot.send_contact(target_id, phone_number=u1["phone"], first_name=u1["name"])
     else:
         if is_like:
             try:
@@ -468,7 +499,6 @@ async def handle_vote(callback: types.CallbackQuery):
         await show_next_profile(callback.message.chat.id, user_id)
 
     await callback.answer()
-
 @dp.callback_query(F.data.startswith("report_"))
 async def handle_report(callback: types.CallbackQuery):
     _, target_id_str = callback.data.split("_", 1)
