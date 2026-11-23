@@ -30,6 +30,9 @@ class Form(StatesGroup):
 class UpdateGeo(StatesGroup):
     waiting_geo = State()
 
+class UpdateBio(StatesGroup):
+    waiting_bio = State()
+
 class DirectMsg(StatesGroup):
     waiting_content = State()
 
@@ -45,8 +48,27 @@ target_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="💃 Девушек"), KeyboardButton(text="🕺 Парней")]],
     resize_keyboard=True, one_time_keyboard=True
 )
+
+DISTRICTS = [
+    "Центральный округ",
+    "Дзёмги (Ленинский округ)",
+    "Привокзальный район",
+    "66-й квартал / Мылки",
+    "Таёжный / Дружба",
+    "Менделеева / Амурлитмаш",
+    "Парус / Силинский",
+    "Хапсоль / Индустриальный"
+]
+
 geo_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="📍 Поделиться геопозицией", request_location=True)]],
+    keyboard=[
+        [KeyboardButton(text="📍 Поделиться геопозицией (покажет км)", request_location=True)],
+        [KeyboardButton(text="🕶 Инкогнито (просто г. Комсомольск-на-Амуре)")],
+        [KeyboardButton(text="Центральный округ"), KeyboardButton(text="Дзёмги (Ленинский округ)")],
+        [KeyboardButton(text="Привокзальный район"), KeyboardButton(text="66-й квартал / Мылки")],
+        [KeyboardButton(text="Таёжный / Дружба"), KeyboardButton(text="Менделеева / Амурлитмаш")],
+        [KeyboardButton(text="Парус / Силинский"), KeyboardButton(text="Хапсоль / Индустриальный")]
+    ],
     resize_keyboard=True, one_time_keyboard=True
 )
 photos_done_kb = ReplyKeyboardMarkup(
@@ -62,18 +84,22 @@ cancel_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-def make_quick_kb(old_value):
-    if not old_value:
+def make_quick_kb(old_value, allow_skip=False):
+    buttons = []
+    if old_value:
+        buttons.append([KeyboardButton(text=str(old_value))])
+    if allow_skip:
+        buttons.append([KeyboardButton(text="⏭ Пропустить")])
+    if not buttons:
         return types.ReplyKeyboardRemove()
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=str(old_value))]],
-        resize_keyboard=True, one_time_keyboard=True
-    )
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
 
 def format_profile_card(user: dict, is_own=False, prefix="") -> str:
     header = "✨ <b>Твоя визитка в КомсаМэтч</b>\n" if is_own else prefix
-    dist = f"📍 <i>{user['distance_str']}</i>\n" if user.get("distance_str") else ""
-    return f"{header}👤 <b>{user['name']}, {user['age']}</b>\n{dist}<blockquote>{user['bio']}</blockquote>"
+    place = user.get("location_text") or "г. Комсомольск-на-Амуре"
+    dist = f"📍 <i>{user['distance_str']}</i>\n" if user.get("distance_str") else f"📍 <i>{place}</i>\n"
+    bio_block = f"<blockquote>{user['bio']}</blockquote>" if user.get("bio") and user["bio"].strip() else ""
+    return f"{header}👤 <b>{user['name']}, {user['age']}</b>\n{dist}{bio_block}"
 
 async def send_full_profile(chat_id: int, user: dict, reply_markup=None, is_own=False, prefix=""):
     photos = user.get("photos_list", [])
@@ -143,10 +169,17 @@ async def process_name(message: types.Message, state: FSMContext):
 
 @dp.message(Form.age)
 async def process_age(message: types.Message, state: FSMContext):
-    if not message.text or not message.text.isdigit() or not (16 <= int(message.text) <= 99):
-        await message.answer("⚠️ Введи возраст цифрами (от 16 до 99):")
+    if not message.text or not message.text.isdigit():
+        await message.answer("⚠️ Введи свой возраст цифрами:")
         return
-    await state.update_data(age=int(message.text))
+    age = int(message.text)
+    if age < 14:
+        await message.answer("🛡 К сожалению, нашим ботом можно пользоваться с <b>14 лет</b> в связи с заботой о вас и вашей безопасности.", parse_mode="HTML")
+        return
+    if age > 67:
+        await message.answer("⚠️ Просим указать ваш настоящий возраст (от 14 до 67 лет):")
+        return
+    await state.update_data(age=age)
     await message.answer("👤 <b>Шаг 3/7.</b> Выбери свой пол:", parse_mode="HTML", reply_markup=gender_kb)
     await state.set_state(Form.gender)
 
@@ -173,26 +206,45 @@ async def process_target(message: types.Message, state: FSMContext):
         await message.answer("Выбери вариант кнопкой ниже 👇", reply_markup=target_kb)
         return
     await state.update_data(target_gender=target)
-    await message.answer("📍 <b>Шаг 5/7.</b> Поделись геопозицией — так мы посчитаем расстояние до людей в километрах:", parse_mode="HTML", reply_markup=geo_kb)
+    await message.answer(
+        "📍 <b>Шаг 5/7.</b> Отправь геопозицию (чтобы видеть км до людей), выбери свой район Комсомольска-на-Амуре или останься инкогнито 👇",
+        parse_mode="HTML", reply_markup=geo_kb
+    )
     await state.set_state(Form.location)
 
 @dp.message(Form.location, F.location)
-async def process_location(message: types.Message, state: FSMContext):
+async def process_location_gps(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    await state.update_data(lat=message.location.latitude, lon=message.location.longitude)
-    await message.answer("📝 <b>Шаг 6/7.</b> Расскажи немного о себе:", parse_mode="HTML", reply_markup=make_quick_kb(data.get("old_user", {}).get("bio")))
-    await state.set_state(Form.bio)
+    await state.update_data(lat=message.location.latitude, lon=message.location.longitude, location_text="г. Комсомольск-на-Амуре")
+    await ask_bio(message, state, data)
 
 @dp.message(Form.location)
-async def process_location_invalid(message: types.Message):
-    await message.answer("📍 Нажми кнопку <b>«Поделиться геопозицией»</b> внизу экрана:", parse_mode="HTML", reply_markup=geo_kb)
+async def process_location_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    text = (message.text or "").strip()
+    if "Инкогнито" in text or not text:
+        loc_text = "г. Комсомольск-на-Амуре"
+    elif text in DISTRICTS:
+        loc_text = f"р-н {text}"
+    else:
+        loc_text = text[:40]
+    await state.update_data(lat=None, lon=None, location_text=loc_text)
+    await ask_bio(message, state, data)
+
+async def ask_bio(message: types.Message, state: FSMContext, data: dict):
+    old_bio = data.get("old_user", {}).get("bio")
+    await message.answer(
+        "📝 <b>Шаг 6/7.</b> Напиши пару слов о себе (интересы, кого ищешь) или нажми <b>«⏭ Пропустить»</b> — анкету можно создать и без текста:",
+        parse_mode="HTML", reply_markup=make_quick_kb(old_bio, allow_skip=True)
+    )
+    await state.set_state(Form.bio)
 
 @dp.message(Form.bio)
 async def process_bio(message: types.Message, state: FSMContext):
-    await state.update_data(bio=message.text)
+    bio = "" if (message.text and "Пропустить" in message.text) else (message.text or "")
+    await state.update_data(bio=bio)
     await message.answer("📸 <b>Шаг 7/7.</b> Загрузи от <b>1 до 3 фото</b> для анкеты:", parse_mode="HTML", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(Form.photos)
-
 @dp.message(Form.photos, F.photo)
 async def process_photos(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -235,13 +287,15 @@ async def complete_registration(message: types.Message, state: FSMContext):
     await db.add_user(
         user_id=message.from_user.id, username=message.from_user.username,
         name=data["name"], age=data["age"], gender=data["gender"],
-        target_gender=data["target_gender"], lat=data["lat"], lon=data["lon"],
-        bio=data["bio"], photos_list=data["photos_list"],
+        target_gender=data["target_gender"], lat=data.get("lat"), lon=data.get("lon"),
+        location_text=data.get("location_text", "г. Комсомольск-на-Амуре"),
+        bio=data.get("bio", ""), photos_list=data["photos_list"],
         video_id=data.get("video_id"), video_type=data.get("video_type")
     )
     await state.clear()
     await message.answer("🎉 <b>Готово!</b> Твоя анкета опубликована!", parse_mode="HTML", reply_markup=main_menu_kb)
     await show_next_profile(message.chat.id, message.from_user.id)
+
 @dp.message(F.text.contains("Смотреть анкеты"))
 async def menu_search(message: types.Message, state: FSMContext):
     await state.clear()
@@ -267,7 +321,8 @@ async def menu_my_profile(message: types.Message, state: FSMContext):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Заполнить заново (быстро)", callback_data="edit_profile")],
-        [InlineKeyboardButton(text="📍 Обновить геопозицию", callback_data="update_geo")],
+        [InlineKeyboardButton(text="📝 Изменить текст о себе", callback_data="add_bio_btn")],
+        [InlineKeyboardButton(text="📍 Сменить геопозицию / район", callback_data="update_geo")],
         [InlineKeyboardButton(text="💤 Скрыть анкету (удалить из поиска)", callback_data="sleep_profile")]
     ])
     await send_full_profile(message.chat.id, user, reply_markup=kb, is_own=True)
@@ -289,15 +344,46 @@ async def handle_wake_up(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "update_geo")
 async def handle_update_geo(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("📍 Отправь новую геопозицию кнопкой ниже:", reply_markup=geo_kb)
+    await callback.message.answer("📍 Отправь GPS, выбери район или останься инкогнито 👇", reply_markup=geo_kb)
     await state.set_state(UpdateGeo.waiting_geo)
     await callback.answer()
 
 @dp.message(UpdateGeo.waiting_geo, F.location)
-async def save_updated_geo(message: types.Message, state: FSMContext):
-    await db.update_location(message.from_user.id, message.location.latitude, message.location.longitude)
+async def save_updated_geo_gps(message: types.Message, state: FSMContext):
+    await db.update_location(message.from_user.id, message.location.latitude, message.location.longitude, "г. Комсомольск-на-Амуре")
     await state.clear()
     await message.answer("✅ Геопозиция обновлена!", reply_markup=main_menu_kb)
+
+@dp.message(UpdateGeo.waiting_geo)
+async def save_updated_geo_text(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if "Инкогнито" in text or not text:
+        loc_text = "г. Комсомольск-на-Амуре"
+    elif text in DISTRICTS:
+        loc_text = f"р-н {text}"
+    else:
+        loc_text = text[:40]
+    await db.update_location(message.from_user.id, None, None, loc_text)
+    await state.clear()
+    await message.answer(f"✅ Локация обновлена: <b>{loc_text}</b>!", parse_mode="HTML", reply_markup=main_menu_kb)
+
+@dp.callback_query(F.data == "add_bio_btn")
+async def handle_add_bio_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("📝 Напиши новый текст о себе (или отправь «-», чтобы очистить):", reply_markup=cancel_kb)
+    await state.set_state(UpdateBio.waiting_bio)
+    await callback.answer()
+
+@dp.message(UpdateBio.waiting_bio, F.text == "❌ Отмена")
+async def cancel_bio_update(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.", reply_markup=main_menu_kb)
+
+@dp.message(UpdateBio.waiting_bio)
+async def save_updated_bio(message: types.Message, state: FSMContext):
+    new_bio = "" if message.text.strip() == "-" else message.text
+    await db.update_bio(message.from_user.id, new_bio)
+    await state.clear()
+    await message.answer("✅ Текст анкеты обновлён!", reply_markup=main_menu_kb)
 
 @dp.callback_query(F.data == "edit_profile")
 async def handle_edit_profile(callback: types.CallbackQuery, state: FSMContext):
@@ -306,8 +392,19 @@ async def handle_edit_profile(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("⚡ <b>Режим быстрого заполнения:</b> нажимай на кнопки внизу со старыми данными или вводи новые!", parse_mode="HTML")
     await start_registration(callback.message, state, old_user=old_user)
     await callback.answer()
-
 async def show_next_profile(chat_id: int, user_id: int):
+    # Проверяем, не пора ли один раз предложить добавить текст о себе (после 12 просмотров)
+    need_bio_prompt = await db.increment_views_and_check_prompt(user_id)
+    if need_bio_prompt:
+        bio_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✍️ Добавить текст в анкету", callback_data="add_bio_btn")
+        ]])
+        await bot.send_message(
+            chat_id,
+            "💡 <b>Маленький совет!</b> Ты посмотрел уже больше 10 анкет, а в твоём профиле пока пусто.\nМожет быть, всё-таки добавим пару слов о себе? Анкеты с описанием получают заметно больше лайков 👇",
+            parse_mode="HTML", reply_markup=bio_kb
+        )
+
     admirer = await db.get_incoming_like(user_id)
     if admirer:
         target_id = admirer["user_id"]
@@ -365,6 +462,7 @@ async def handle_vote(callback: types.CallbackQuery):
 
     await show_next_profile(callback.message.chat.id, user_id)
     await callback.answer()
+
 @dp.callback_query(F.data.startswith("msg_"))
 async def start_direct_msg(callback: types.CallbackQuery, state: FSMContext):
     _, target_id_str = callback.data.split("_", 1)
