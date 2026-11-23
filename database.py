@@ -1,8 +1,12 @@
+import os
 import math
 import json
 import aiosqlite
 
-DB_NAME = "dating.db"
+DATA_DIR = os.getenv("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_NAME = os.path.join(DATA_DIR, "dating.db")
+
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
