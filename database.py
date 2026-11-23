@@ -13,6 +13,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
+                phone TEXT,
                 name TEXT,
                 age INTEGER,
                 gender TEXT,
@@ -31,6 +32,7 @@ async def init_db():
             )
         """)
         for col in [
+            "ALTER TABLE users ADD COLUMN phone TEXT",
             "ALTER TABLE users ADD COLUMN photos TEXT",
             "ALTER TABLE users ADD COLUMN video_id TEXT",
             "ALTER TABLE users ADD COLUMN video_type TEXT",
@@ -55,14 +57,14 @@ async def init_db():
         """)
         await db.commit()
 
-async def add_user(user_id, username, name, age, gender, target_gender, lat, lon, location_text, bio, photos_list, video_id=None, video_type=None):
+async def add_user(user_id, username, phone, name, age, gender, target_gender, lat, lon, location_text, bio, photos_list, video_id=None, video_type=None):
     photos_json = json.dumps(photos_list)
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
             INSERT OR REPLACE INTO users 
-            (user_id, username, name, age, gender, target_gender, lat, lon, location_text, bio, photos, video_id, video_type, is_active, is_banned, views_count, bio_prompted)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0)
-        """, (user_id, username, name, age, gender, target_gender, lat, lon, location_text, bio or "", photos_json, video_id, video_type))
+            (user_id, username, phone, name, age, gender, target_gender, lat, lon, location_text, bio, photos, video_id, video_type, is_active, is_banned, views_count, bio_prompted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0)
+        """, (user_id, username, phone, name, age, gender, target_gender, lat, lon, location_text, bio or "", photos_json, video_id, video_type))
         await db.commit()
 
 async def update_location(user_id, lat, lon, location_text):
