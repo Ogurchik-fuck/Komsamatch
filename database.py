@@ -7,7 +7,6 @@ DATA_DIR = os.getenv("DATA_DIR", ".")
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_NAME = os.path.join(DATA_DIR, "dating.db")
 
-
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
@@ -139,7 +138,6 @@ def format_place(me: dict, target: dict) -> str:
             return f"~{km_rounded} км от тебя (~{drive_min} мин на авто)"
     return target.get("location_text") or "г. Комсомольск-на-Амуре"
 
-
 async def get_next_profile(user_id):
     me = await get_user(user_id)
     if not me or me.get("is_banned") or not me.get("is_active", 1):
@@ -169,7 +167,14 @@ async def get_next_profile(user_id):
         if not profiles:
             return None
 
-        profiles.sort(key=lambda p: calc_distance_num(me.get("lat"), me.get("lon"), p.get("lat"), p.get("lon")))
+        my_age = me.get("age", 20)
+        def sort_key(p):
+            p_age = p.get("age", 20)
+            in_range = 0 if (my_age - 2 <= p_age <= my_age + 3) else 1
+            dist = calc_distance_num(me.get("lat"), me.get("lon"), p.get("lat"), p.get("lon"))
+            return (in_range, dist, abs(p_age - my_age))
+
+        profiles.sort(key=sort_key)
         best = next(iter(profiles))
         best["distance_str"] = format_place(me, best)
         return best
