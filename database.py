@@ -16,12 +16,15 @@ async def init_db():
                 target_gender TEXT,
                 lat REAL,
                 lon REAL,
-                bio TEXT,
+                location_text TEXT DEFAULT 'г. Комсомольск-на-Амуре',
+                bio TEXT DEFAULT '',
                 photos TEXT,
                 video_id TEXT,
                 video_type TEXT,
                 is_active BOOLEAN DEFAULT 1,
-                is_banned BOOLEAN DEFAULT 0
+                is_banned BOOLEAN DEFAULT 0,
+                views_count INTEGER DEFAULT 0,
+                bio_prompted BOOLEAN DEFAULT 0
             )
         """)
         for col in [
@@ -29,7 +32,10 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN video_id TEXT",
             "ALTER TABLE users ADD COLUMN video_type TEXT",
             "ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1",
-            "ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT 0"
+            "ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN location_text TEXT DEFAULT 'г. Комсомольск-на-Амуре'",
+            "ALTER TABLE users ADD COLUMN views_count INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN bio_prompted BOOLEAN DEFAULT 0"
         ]:
             try:
                 await db.execute(col)
@@ -46,20 +52,40 @@ async def init_db():
         """)
         await db.commit()
 
-async def add_user(user_id, username, name, age, gender, target_gender, lat, lon, bio, photos_list, video_id=None, video_type=None):
+async def add_user(user_id, username, name, age, gender, target_gender, lat, lon, location_text, bio, photos_list, video_id=None, video_type=None):
     photos_json = json.dumps(photos_list)
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
             INSERT OR REPLACE INTO users 
-            (user_id, username, name, age, gender, target_gender, lat, lon, bio, photos, video_id, video_type, is_active, is_banned)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
-        """, (user_id, username, name, age, gender, target_gender, lat, lon, bio, photos_json, video_id, video_type))
+            (user_id, username, name, age, gender, target_gender, lat, lon, location_text, bio, photos, video_id, video_type, is_active, is_banned, views_count, bio_prompted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0)
+        """, (user_id, username, name, age, gender, target_gender, lat, lon, location_text, bio or "", photos_json, video_id, video_type))
         await db.commit()
 
-async def update_location(user_id, lat, lon):
+async def update_location(user_id, lat, lon, location_text):
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE users SET lat = ?, lon = ? WHERE user_id = ?", (lat, lon, user_id))
+        await db.execute("UPDATE users SET lat = ?, lon = ?, location_text = ? WHERE user_id = ?", (lat, lon, location_text, user_id))
         await db.commit()
+
+async def update_bio(user_id, bio):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET bio = ?, bio_prompted = 1 WHERE user_id = ?", (bio, user_id))
+        await db.commit()
+
+async def increment_views_and_check_prompt(user_id) -> bool:
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET views_count = COALESCE(views_count, 0) + 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
+        cursor = await db.execute("SELECT bio, views_count, bio_prompted FROM users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        bio, views, prompted = row
+        if (not bio or not bio.strip()) and views >= 12 and not prompted:
+            await db.execute("UPDATE users SET bio_prompted = 1 WHERE user_id = ?", (user_id,))
+            await db.commit()
+            return True
+        return False
 
 async def set_active(user_id, is_active: bool):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -92,13 +118,11 @@ def calc_distance_num(lat1, lon1, lat2, lon2):
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def calc_distance(lat1, lon1, lat2, lon2):
-    if None in (lat1, lon1, lat2, lon2):
-        return "рядом в Комсе"
-    dist = calc_distance_num(lat1, lon1, lat2, lon2)
-    if dist < 1:
-        return "менее 1 км от тебя"
-    return f"{round(dist)} км от тебя"
+def format_place(me: dict, target: dict) -> str:
+    if None not in (me.get("lat"), me.get("lon"), target.get("lat"), target.get("lon")):
+        dist = calc_distance_num(me["lat"], me["lon"], target["lat"], target["lon"])
+        return "менее 1 км от тебя" if dist < 1 else f"{round(dist)} км от тебя"
+    return target.get("location_text") or "г. Комсомольск-на-Амуре"
 
 async def get_next_profile(user_id):
     me = await get_user(user_id)
@@ -131,7 +155,7 @@ async def get_next_profile(user_id):
 
         profiles.sort(key=lambda p: calc_distance_num(me.get("lat"), me.get("lon"), p.get("lat"), p.get("lon")))
         best = next(iter(profiles))
-        best["distance_str"] = calc_distance(me.get("lat"), me.get("lon"), best.get("lat"), best.get("lon"))
+        best["distance_str"] = format_place(me, best)
         return best
 
 async def get_incoming_like(user_id):
@@ -154,7 +178,7 @@ async def get_incoming_like(user_id):
             return None
         p = dict(row)
         p["photos_list"] = json.loads(p["photos"]) if p.get("photos") else ([p["photo_id"]] if p.get("photo_id") else [])
-        p["distance_str"] = calc_distance(me.get("lat"), me.get("lon"), p.get("lat"), p.get("lon"))
+        p["distance_str"] = format_place(me, p)
         return p
 
 async def add_like(from_user, to_user, is_like: bool) -> bool:
@@ -164,14 +188,12 @@ async def add_like(from_user, to_user, is_like: bool) -> bool:
             (from_user, to_user, is_like)
         )
         await db.commit()
-
         if is_like:
             cursor = await db.execute(
                 "SELECT is_like FROM likes WHERE from_user = ? AND to_user = ? AND is_like = 1",
                 (to_user, from_user)
             )
-            mutual = await cursor.fetchone()
-            return bool(mutual)
+            return bool(await cursor.fetchone())
         return False
 
 async def ban_user(user_id):
