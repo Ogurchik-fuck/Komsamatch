@@ -33,9 +33,6 @@ class UpdateGeo(StatesGroup):
 class UpdateBio(StatesGroup):
     waiting_bio = State()
 
-class DirectMsg(StatesGroup):
-    waiting_content = State()
-
 main_menu_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🔥 Смотреть анкеты"), KeyboardButton(text="👤 Моя анкета")]],
     resize_keyboard=True
@@ -245,6 +242,7 @@ async def process_bio(message: types.Message, state: FSMContext):
     await state.update_data(bio=bio)
     await message.answer("📸 <b>Шаг 7/7.</b> Загрузи от <b>1 до 3 фото</b> для анкеты:", parse_mode="HTML", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(Form.photos)
+
 @dp.message(Form.photos, F.photo)
 async def process_photos(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -293,9 +291,8 @@ async def complete_registration(message: types.Message, state: FSMContext):
         video_id=data.get("video_id"), video_type=data.get("video_type")
     )
     await state.clear()
-    await message.answer("🎉 <b>Готово!</b> Твоя анкета опубликована!", parse_mode="HTML", reply_markup=main_menu_kb)
-    await show_next_profile(message.chat.id, message.from_user.id)
-
+    await message.answer("🎉 <b>Готово!</b> Твоя анкета опубликована. Вот как её видят другие 👇", parse_mode="HTML", reply_markup=main_menu_kb)
+    await menu_my_profile(message, state)
 @dp.message(F.text.contains("Смотреть анкеты"))
 async def menu_search(message: types.Message, state: FSMContext):
     await state.clear()
@@ -392,8 +389,8 @@ async def handle_edit_profile(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("⚡ <b>Режим быстрого заполнения:</b> нажимай на кнопки внизу со старыми данными или вводи новые!", parse_mode="HTML")
     await start_registration(callback.message, state, old_user=old_user)
     await callback.answer()
+
 async def show_next_profile(chat_id: int, user_id: int):
-    # Проверяем, не пора ли один раз предложить добавить текст о себе (после 12 просмотров)
     need_bio_prompt = await db.increment_views_and_check_prompt(user_id)
     if need_bio_prompt:
         bio_kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -422,7 +419,7 @@ async def show_next_profile(chat_id: int, user_id: int):
     target_id = profile["user_id"]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❤️ Лайк", callback_data=f"like_{target_id}"), InlineKeyboardButton(text="👎 Дальше", callback_data=f"pass_{target_id}")],
-        [InlineKeyboardButton(text="💌 Кружочек / Сообщение", callback_data=f"msg_{target_id}"), InlineKeyboardButton(text="⚠️ Жалоба", callback_data=f"report_{target_id}")]
+        [InlineKeyboardButton(text="⚠️ Жалоба", callback_data=f"report_{target_id}")]
     ])
     await send_full_profile(chat_id, profile, reply_markup=kb, is_own=False)
 
@@ -445,59 +442,32 @@ async def handle_vote(callback: types.CallbackQuery):
         u1 = await db.get_user(user_id)
         u2 = await db.get_user(target_id)
         if u1 and u2:
-            kb1 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💌 Отправить кружочек / сообщение", callback_data=f"msg_{target_id}")]])
-            kb2 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💌 Отправить кружочек / сообщение", callback_data=f"msg_{user_id}")]])
-            await callback.message.answer(f"🎉 <b>Бинго! Взаимная симпатия с {u2['name']}!</b> Написать: @{u2['username']}", parse_mode="HTML", reply_markup=kb1)
-            await bot.send_message(target_id, f"🎉 <b>Бинго! Взаимная симпатия с {u1['name']}!</b> Написать: @{u1['username']}", parse_mode="HTML", reply_markup=kb2)
-    elif is_like:
-        try:
-            view_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👀 Посмотреть, кто это", callback_data="view_likes")]])
+            next_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔥 Смотреть дальше", callback_data="view_likes")
+            ]])
+            await callback.message.answer(
+                f"🎉 <b>Бинго! Взаимная симпатия с <a href='https://t.me{u2['username']}'>{u2['name']}</a>!</b>\nНажимай на имя, чтобы перейти в личку 💌",
+                parse_mode="HTML", reply_markup=next_kb
+            )
             await bot.send_message(
                 target_id,
-                "💘 <b>Твоя анкета кому-то понравилась!</b>\nЗаканчивай с просмотром и давай посмотрим, кто поставил лайк 👇",
-                parse_mode="HTML", reply_markup=view_kb
+                f"🎉 <b>Бинго! Взаимная симпатия с <a href='https://t.me{u1['username']}'>{u1['name']}</a>!</b>\nНажимай на имя, чтобы перейти в личку 💌",
+                parse_mode="HTML", reply_markup=next_kb
             )
-        except Exception:
-            pass
+    else:
+        if is_like:
+            try:
+                view_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👀 Посмотреть, кто это", callback_data="view_likes")]])
+                await bot.send_message(
+                    target_id,
+                    "💘 <b>Твоя анкета кому-то понравилась!</b>\nЗаканчивай с просмотром и давай посмотрим, кто поставил лайк 👇",
+                    parse_mode="HTML", reply_markup=view_kb
+                )
+            except Exception:
+                pass
+        await show_next_profile(callback.message.chat.id, user_id)
 
-    await show_next_profile(callback.message.chat.id, user_id)
     await callback.answer()
-
-@dp.callback_query(F.data.startswith("msg_"))
-async def start_direct_msg(callback: types.CallbackQuery, state: FSMContext):
-    _, target_id_str = callback.data.split("_", 1)
-    target_id = int(target_id_str)
-    target_info = await db.get_user(target_id)
-    if not target_info:
-        await callback.answer("Пользователь не найден.", show_alert=True)
-        return
-    await state.update_data(target_id=target_id)
-    await state.set_state(DirectMsg.waiting_content)
-    await callback.message.answer(f"💌 Запиши <b>видеокружочек</b>, <b>голосовое</b> или напиши текст для <b>{target_info['name']}</b>:", parse_mode="HTML", reply_markup=cancel_kb)
-    await callback.answer()
-
-@dp.message(DirectMsg.waiting_content, F.text == "❌ Отмена")
-async def cancel_direct_msg(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Отправка отменена.", reply_markup=main_menu_kb)
-
-@dp.message(DirectMsg.waiting_content)
-async def send_direct_msg(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    target_id = data.get("target_id")
-    sender = await db.get_user(message.from_user.id)
-    if not target_id or not sender:
-        await state.clear()
-        await message.answer("Ошибка отправки.", reply_markup=main_menu_kb)
-        return
-    reply_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="↩️ Ответить", callback_data=f"msg_{message.from_user.id}")]])
-    try:
-        await bot.send_message(target_id, f"💌 Сообщение от <b>{sender['name']}, {sender['age']}</b> (@{sender['username']}):", parse_mode="HTML")
-        await message.copy_to(chat_id=target_id, reply_markup=reply_kb)
-        await message.answer("🚀 Доставлено!", reply_markup=main_menu_kb)
-    except Exception:
-        await message.answer("⚠️ Не удалось доставить (пользователь остановил бота).", reply_markup=main_menu_kb)
-    await state.clear()
 
 @dp.callback_query(F.data.startswith("report_"))
 async def handle_report(callback: types.CallbackQuery):
