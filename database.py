@@ -181,6 +181,19 @@ async def get_next_profile(user_id):
         best["distance_str"] = format_place(me, best)
         return best
 
+async def count_incoming_likes(user_id) -> int:
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("""
+            SELECT COUNT(*) FROM likes l
+            JOIN users u ON u.user_id = l.from_user
+            WHERE l.to_user = ?
+              AND l.is_like = 1
+              AND u.is_banned = 0
+              AND u.user_id NOT IN (SELECT to_user FROM likes WHERE from_user = ?)
+        """, (user_id, user_id))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
 async def get_incoming_like(user_id):
     me = await get_user(user_id)
     if not me:
