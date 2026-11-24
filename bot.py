@@ -17,6 +17,14 @@ ADMIN_ID = 9131132339
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+def format_people_dative(n: int) -> str:
+    if 11 <= (n % 100) <= 19:
+        return f"{n} людям"
+    last = n % 10
+    if last == 1:
+        return f"{n} человеку"
+    return f"{n} людям"
+
 class Form(StatesGroup):
     contact = State()
     name = State()
@@ -468,8 +476,8 @@ async def handle_vote(callback: types.CallbackQuery):
             next_kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔥 Смотреть дальше", callback_data="view_likes")
             ]])
-            link2 = f"https://t.me{u2['phone']}" if u2.get("phone") else (f"https://t.me{u2['username'].lstrip('@')}" if u2.get("username") else f"tg://user?id={target_id}")
-            link1 = f"https://t.me{u1['phone']}" if u1.get("phone") else (f"https://t.me{u1['username'].lstrip('@')}" if u1.get("username") else f"tg://user?id={user_id}")
+            link2 = f"tg://user?id={target_id}"
+            link1 = f"tg://user?id={user_id}"
 
             await callback.message.answer(
                 f"🎉 <b>Бинго! Взаимная симпатия с <a href='{link2}'>{u2['name']}</a>!</b>\nНажимай на имя или карточку контакта ниже 💌",
@@ -488,10 +496,15 @@ async def handle_vote(callback: types.CallbackQuery):
     else:
         if is_like:
             try:
-                view_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="👀 Посмотреть, кто это", callback_data="view_likes")]])
+                likes_cnt = await db.count_incoming_likes(target_id)
+                people_str = format_people_dative(max(1, likes_cnt))
+                already = "уже " if likes_cnt > 1 else ""
+                view_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="👀 Посмотреть, кто там", callback_data="view_likes")
+                ]])
                 await bot.send_message(
                     target_id,
-                    "💘 <b>Твоя анкета кому-то понравилась!</b>\nЗаканчивай с просмотром и давай посмотрим, кто поставил лайк 👇",
+                    f"💘 <b>Твоя анкета понравилась {already}{people_str}!</b>\nЗаканчивай с просмотром и давай посмотрим, кто там 👇",
                     parse_mode="HTML", reply_markup=view_kb
                 )
             except Exception:
